@@ -25,14 +25,14 @@ const HardwareSerial *IO = &Serial;
 const int BUTTON_PIN = 2;
 const int LED_PIN = 3;
 
-const int DEBOUNCE = 40;
+const int DEBOUNCE = 20;
 
-const int ACTIVE_THRESHOLD = 2000;
-const int CLEAR_THRESHOLD = 4000;
+const int ACTIVE_THRESHOLD = 1500; // hold 1500ms for activate/deactivate
+const int CLEAR_THRESHOLD = 3000; // hold 3000ms for clear
 
 const int MIN_TAPS = 2;
 
-const int MAX_TAP = 2000;
+const int MAX_TAP = 2000; // limit tapped in beat length to 2000ms
 
 const int LED_DURATION = 80;
 
@@ -43,8 +43,8 @@ const long MS_PER_MINUTE = 60000; // 1000ms/s, 60s/min
 const int BEATS_PER_MEASURE = 4;
 
 volatile bool active = false;
-volatile bool activePressed = false;
-volatile bool clearedOnce = false;
+volatile bool activePressed = false; // block against calling activate() more than once per tap & hold
+volatile bool clearedOnce = false; // block against calling clear() more than once per tap & hold
 volatile bool previousButtonState = false;
 
 volatile int lit = 0;
@@ -93,7 +93,7 @@ bool getLongHold() {
 }
 
 bool getShortHold() {
-  return pressed == CLOSED && holdTime > ACTIVE_THRESHOLD && holdTime < CLEAR_THRESHOLD;
+  return pressed == CLOSED && holdTime >= ACTIVE_THRESHOLD && holdTime < CLEAR_THRESHOLD;
 }
 
 void syncSend() {
@@ -156,7 +156,7 @@ void setBpm(long lastTime, long currentTime) {
 void blinkLED() {
   if (active && (millis() - prevBpmLoop) < LED_DURATION) {
     if (quarterCount == 0) {
-      lit = 255;
+      lit = 255; // blink brightly on the downbeat of a measure
     } else {
       lit = 10;
     }
@@ -182,9 +182,31 @@ void bpmSend() {
 
   quarterCount = (quarterCount + 1) % BEATS_PER_MEASURE;
 
+  // every downbeat of a measure, send sync
   if (quarterCount == 0) syncSend();
 
   prevBpmLoop = now;
+}
+
+void handleButtonHold() {
+  holdTime = millis() - lastTapTime;
+
+  // we don't want to reactivate if we don't have a bpm or beatMs set
+  if (getShortHold() && !activePressed && bpm != 0 && beatMs != 0) {
+    if (DEBUG) IO->println("activating/deactivating");
+
+    // TODO: flash once
+
+    activate();
+  }
+
+  if (getLongHold() && !clearedOnce) {
+    if (DEBUG) IO->println("clearing");
+
+    // TODO: flash twice
+
+    clear();
+  }
 }
 
 void handleButtonInput() {
@@ -203,33 +225,26 @@ void handleButtonInput() {
     previousButtonState = currentButtonState;
 
     if (pressed == CLOSED) {
-      const bool resetTaps = now - lastTapTime > MAX_TAP && tapCount > 0;
-
-      tapCount = resetTaps ? 0 : tapCount + 1;
-
-      if (tapCount > MIN_TAPS) {
-        setBpm(lastTapTime, now);
-      }
-
-      lastTapTime = now;
+      handleButtonTap();
     }
   } else {
     if (pressed == CLOSED) {
-      holdTime = now - lastTapTime;
-
-      if (getShortHold() && !activePressed) {
-        if (DEBUG) IO->println("activating/deactivating");
-
-        activate();
-      }
-
-      if (getLongHold() && !clearedOnce) {
-        if (DEBUG) IO->println("clearing");
-
-        clear();
-      }
+      handleButtonHold();
     }
   }
+}
+
+void handleButtonTap() {
+  const long now = millis();
+  const bool resetTaps = now - lastTapTime > MAX_TAP && tapCount >= 0;
+
+  tapCount = resetTaps ? 0 : tapCount + 1;
+
+  if (tapCount >= MIN_TAPS) {
+    setBpm(lastTapTime, now);
+  }
+
+  lastTapTime = now;
 }
 
 void linkMaintain() {
